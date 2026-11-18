@@ -6,6 +6,19 @@
  */
 const PASSWORD = '請改成填表密碼';        // 手機填表用
 const ADMIN_PASSWORD = '請改成管理密碼';  // 上傳 Excel 覆蓋資料用
+const SHEET_NAME = '屏東廠藥品品質抽查資料'; // 獨立專案時自動建立的試算表名稱
+
+/** 取得資料試算表：綁定在試算表上就用該試算表；獨立專案則第一次自動建立並記住 ID。 */
+function ss_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('SHEET_ID');
+  if (id) return SpreadsheetApp.openById(id);
+  const act = SpreadsheetApp.getActiveSpreadsheet();
+  if (act) return act;
+  const created = SpreadsheetApp.create(SHEET_NAME);
+  props.setProperty('SHEET_ID', created.getId());
+  return created;
+}
 
 const SHEETS = {
   POOL: 'Sheet3',          // 客戶自備藥母體
@@ -61,7 +74,7 @@ function withLock_(fn) {
 /* ---------------- 初始化（第一次手動執行一次） ---------------- */
 
 function setup() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   [SHEETS.POOL, SHEETS.CHECKED_CUST, SHEETS.CHECKED_COMP, SHEETS.LAB].forEach(n => {
     if (!ss.getSheetByName(n)) ss.insertSheet(n);
   });
@@ -71,13 +84,14 @@ function setup() {
   let r = ss.getSheetByName(SHEETS.RECORDS);
   if (!r) { r = ss.insertSheet(SHEETS.RECORDS); }
   if (r.getLastRow() === 0) r.getRange(1, 1, 1, RECORD_HEADER.length).setValues([RECORD_HEADER]).setFontWeight('bold');
-  return '完成';
+  Logger.log('資料試算表：' + ss.getUrl());
+  return ss.getUrl();
 }
 
 /* ---------------- 讀取 ---------------- */
 
 function values_(name) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  const sh = ss_().getSheetByName(name);
   if (!sh || sh.getLastRow() === 0) return [];
   return sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 1)).getDisplayValues();
 }
@@ -162,7 +176,7 @@ function findRecordRow_(sh, date) {
 }
 
 function getReport_(date) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RECORDS);
+  const sh = ss_().getSheetByName(SHEETS.RECORDS);
   if (!sh) return null;
   const row = findRecordRow_(sh, String(date));
   if (row < 0) return null;
@@ -174,7 +188,7 @@ function getReport_(date) {
 function saveReport_(rep) {
   if (!rep || !/^\d{4}-\d{2}-\d{2}$/.test(rep.date)) return { ok: false, error: '抽查日期格式錯誤' };
   setup();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   const sh = ss.getSheetByName(SHEETS.RECORDS);
   const items = rep.items || [];
   const fail = items.filter(it => it.verdict === '不合格').length;
@@ -218,7 +232,7 @@ function appendText_(sh, row) {
 }
 
 function deleteReport_(date) {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.RECORDS);
+  const sh = ss_().getSheetByName(SHEETS.RECORDS);
   const r = sh ? findRecordRow_(sh, String(date)) : -1;
   if (r < 0) return { ok: false, error: '找不到這一天的週報' };
   sh.deleteRow(r);
@@ -228,7 +242,7 @@ function deleteReport_(date) {
 /* ---------------- 上傳 Excel 覆蓋 ---------------- */
 
 function upload_(sheets) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   const stamp = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd_HHmm');
   const done = [];
   UPLOADABLE.forEach(name => {
