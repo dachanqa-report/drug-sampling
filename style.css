@@ -13,8 +13,8 @@ button, input, select { font: inherit; color: inherit; }
   padding: 10px 14px calc(10px) ; padding-top: max(10px, env(safe-area-inset-top)); background: var(--brand); color: #fff; }
 .t1 { font-weight: 700; font-size: 17px; }
 .t2 { font-size: 12px; opacity: .8; }
-.top-actions { display: flex; gap: 6px; }
-.icon-btn { border: 1px solid rgba(255,255,255,.35); background: transparent; color: inherit; border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+.top-actions { display: flex; gap: 4px; }
+.icon-btn { border: 1px solid rgba(255,255,255,.35); background: transparent; color: inherit; border-radius: 8px; padding: 6px 8px; font-size: 14px; }
 .sheet .icon-btn { border-color: var(--line); color: var(--ink); }
 
 main { max-width: 720px; margin: 0 auto; padding: 12px 12px 40px; }

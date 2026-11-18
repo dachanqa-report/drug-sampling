@@ -206,10 +206,78 @@
     return { files: out, remove: ['xl/calcChain.xml'] };
   }
 
+
+  /* ---------- 已查過（輪次制，只看藥名） ---------- */
+  // legacy: [[藥名, ...]]；log: [{name, date}]
+  function buildChecked(legacy, log) {
+    const map = new Map();
+    const get = n => { const k = norm(n); if (!k) return null; if (!map.has(k)) map.set(k, { count: 0, last: '', legacy: 0 }); return map.get(k); };
+    (legacy || []).forEach(r => { const e = get(r[0]); if (e) { e.count++; e.legacy++; } });
+    (log || []).forEach(r => { const e = get(r.name); if (e) { e.count++; if (String(r.date) > e.last) e.last = String(r.date); } });
+    return map;
+  }
+  // universe: 本輪範圍的藥名陣列；回傳 {min, isDone(name), info(name)}
+  function roundOf(map, universe) {
+    let min = Infinity;
+    const seen = new Set();
+    (universe || []).forEach(n => { const k = norm(n); if (!k || seen.has(k)) return; seen.add(k); const e = map.get(k); min = Math.min(min, e ? e.count : 0); });
+    if (min === Infinity) min = 0;
+    const info = n => map.get(norm(n)) || { count: 0, last: '', legacy: 0 };
+    return { min: min, size: seen.size, isDone: n => info(n).count > min, info: info,
+      pending: Array.from(seen).filter(k => (map.get(k) ? map.get(k).count : 0) <= min).length };
+  }
+  function rocShort(iso) { const d = parseISO(iso); return d ? (d.getUTCFullYear() - 1911) + '/' + (d.getUTCMonth() + 1) + '/' + d.getUTCDate() : ''; }
+  function checkedLabel(e) { return e.last ? '✓ 上次 ' + rocShort(e.last) : '✓ 舊資料'; }
+
+  /* ---------- 簡易 xlsx 產生（多分頁、純文字） ---------- */
+  function colName(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+  function xlsxFiles(sheets) {
+    // sheets: [{name, rows: [[...]], widths?: [..]}]
+    const f = {};
+    f['[Content_Types].xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+      sheets.map((s, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('') + '</Types>';
+    f['_rels/.rels'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+    f['xl/workbook.xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+      sheets.map((s, i) => '<sheet name="' + esc(s.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join('') + '</sheets></workbook>';
+    f['xl/_rels/workbook.xml.rels'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      sheets.map((s, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join('') +
+      '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+    f['xl/styles.xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="12"/><name val="新細明體"/></font><font><b/><sz val="12"/><name val="新細明體"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F1F3"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    sheets.forEach((s, i) => {
+      const cols = s.widths ? '<cols>' + s.widths.map((w, j) => '<col min="' + (j + 1) + '" max="' + (j + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols>' : '';
+      const rows = s.rows.map((r, ri) => '<row r="' + (ri + 1) + '">' + r.map((v, ci) => {
+        if (v === '' || v == null) return '';
+        return '<c r="' + colName(ci) + (ri + 1) + '"' + (ri === 0 ? ' s="1"' : '') + ' t="inlineStr"><is><t xml:space="preserve">' + esc(v) + '</t></is></c>';
+      }).join('') + '</row>').join('');
+      f['xl/worksheets/sheet' + (i + 1) + '.xml'] = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' + cols + '<sheetData>' + rows + '</sheetData></worksheet>';
+    });
+    return f;
+  }
+
+  // 已查過清單輸出列（對齊 Sheet1／工作表1 欄位）
+  // range: {mode:'year'|'all'|'custom', year, from, to}
+  function checkedExportRows(type, legacy, log, range) {
+    const isCust = type === 'cust';
+    const head = isCust ? ['類別', '藥名', '客戶', '', '外觀', '效期', '抽查日期', '週次', '檢驗報告', '判定', '備註']
+      : ['類別', '藥名', '', '藥廠廠商', '外觀', '效期', '抽查日期', '週次', '檢驗報告', '判定', '備註'];
+    const label = isCust ? '客戶藥' : '公司藥';
+    const rows = [head];
+    if (range.mode === 'all') (legacy || []).forEach(r => rows.push(isCust ? [label, r[0], r[1], '', r[2], r[3], '舊資料', '', '', '', '']
+      : [label, r[0], '', r[1], r[2], r[3], '舊資料', '', '', '', '']));
+    (log || []).filter(r => r.type === type).filter(r => {
+      if (range.mode === 'year') return String(r.date).slice(0, 4) === String(range.year);
+      if (range.mode === 'custom') return (!range.from || r.date >= range.from) && (!range.to || r.date <= range.to);
+      return true;
+    }).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach(r => rows.push(isCust
+      ? [label, r.name, r.cust, '', r.appearance, r.exp, r.date, r.code, r.lab, r.verdict, r.remark]
+      : [label, r.name, '', r.cust, r.appearance, r.exp, r.date, r.code, r.lab, r.verdict, r.remark]));
+    return rows;
+  }
+
   function fileName(iso) { return '屏東廠藥品品質抽查表(Rev.08)' + reportCode(iso) + '.xlsx'; }
 
   return {
     norm, similarity, todayISO, isoWeek, reportCode, rocDateText, expToISO, expText, isExpired,
-    buildLabIndex, lookupLab, judgeOK, autoVerdict, monthWeeks, setCells, reportCells, rateCells, patchWorkbook, fileName
+    buildLabIndex, lookupLab, judgeOK, buildChecked, roundOf, rocShort, checkedLabel, xlsxFiles, checkedExportRows, autoVerdict, monthWeeks, setCells, reportCells, rateCells, patchWorkbook, fileName
   };
 });

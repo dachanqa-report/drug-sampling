@@ -12,7 +12,7 @@
   };
   let data = null;         // 後端資料
   let labIdx = { map: new Map(), names: [] };
-  let checkedCust = new Set(), checkedComp = new Set();
+  let chkCust = new Map(), chkComp = new Map();   // 藥名 → {count, last, legacy}
   let report = newReport(C.todayISO());
 
   /* ---------------- 工具 ---------------- */
@@ -92,8 +92,7 @@
       const j = await api('getData');
       data = j.data;
       labIdx = C.buildLabIndex(data.lab || []);
-      checkedCust = new Set(data.checkedCust.map(p => ckey(p[0], p[1])));
-      checkedComp = new Set(data.checkedComp.map(n => C.norm(n)));
+      rebuildChecked();
       status('');
       const notes = [];
       if (!data.pool.length) notes.push('Sheet3（客戶藥母體）是空的');
@@ -146,6 +145,7 @@
     if (!data) return '';
     const used = usedKeys(i);
     const isCust = it.type === 'cust';
+    const rd = round(it.type);
     const curKey = it.name ? (isCust ? ckey(it.name, it.cust) : C.norm(it.name)) : '';
     let found = false;
     const groups = isCust ? { a: [], b: [], c: [] } : { a: [], b: [] };
@@ -153,26 +153,26 @@
     list.forEach((p, k) => {
       if (!isCust && !p.active) return;
       const key = isCust ? ckey(p.name, p.cust) : C.norm(p.name);
-      const done = isCust ? checkedCust.has(key) : checkedComp.has(key);
+      const done = rd.isDone(p.name);
       const sel = key === curKey && !found;
       if (sel) found = true;
-      const inuse = used.has(key) && !sel;
+      const inuse = used.has(it.type + '|' + C.norm(p.name)) && !sel;
       let bad = '';
       if (isCust) {
         const e = C.expToISO(p.exp);
         if (!e || e < report.date) bad = '過期';
         else if (!(p.qty > 0)) bad = '無庫存';
       }
-      const label = (done ? '✓ ' : '') + p.name + '｜' + (isCust ? (p.cust || '—') + '｜效期 ' + (C.expText(C.expToISO(p.exp)) || p.exp || '—') : (p.maker || '—')) +
+      const label = (done ? doneLabel(rd, p.name) + '｜' : '') + p.name + '｜' + (isCust ? (p.cust || '—') + '｜效期 ' + (C.expText(C.expToISO(p.exp)) || p.exp || '—') : (p.maker || '—')) +
         (bad ? '（' + bad + '）' : '') + (inuse ? '（本週已選）' : '');
       const opt = '<option value="' + k + '"' + (sel ? ' selected' : '') + (inuse ? ' disabled' : '') + '>' + esc(label) + '</option>';
       (bad ? groups.c : done ? groups.b : groups.a).push(opt);
     });
     const g = (t, a) => a.length ? '<optgroup label="' + t + '（' + a.length + '）">' + a.join('') + '</optgroup>' : '';
     return '<div class="pick-row"><select class="pick-sel" data-act="sel" data-i="' + i + '">' +
-      '<option value=""' + (it.name ? '' : ' selected') + '>— 下拉選擇' + (isCust ? '客戶藥' : '公司藥') + '（✓ = 已查過）—</option>' +
+      '<option value=""' + (it.name ? '' : ' selected') + '>— 下拉選擇' + (isCust ? '客戶藥' : '公司藥') + '（本輪剩 ' + rd.pending + '／' + rd.size + ' 種未查）—</option>' +
       (it.name && !found ? '<option value="" selected>' + esc(it.name + '（手動輸入）') + '</option>' : '') +
-      g('未查過', groups.a) + g('✓ 已查過', groups.b) + (isCust ? g('過期或無庫存', groups.c) : '') + '</select></div>';
+      g('本輪未查過', groups.a) + g('✓ 本輪已查過', groups.b) + (isCust ? g('過期或無庫存', groups.c) : '') + '</select></div>';
   }
   function itemHtml(it, i) {
     const no = it.type === 'cust' ? i + 1 : i - N_CUST + 1;
@@ -181,8 +181,10 @@
     if (it.name) {
       sub = it.type === 'cust'
         ? '客戶：' + esc(it.cust || '—') + (it.qty != null ? ' · 庫存 ' + esc(it.qty) : '') + (it.sup ? ' · ' + esc(it.sup) : '') +
-          (checkedCust.has(ckey(it.name, it.cust)) ? ' · <b>✓已查過</b>' : '')
-        : '藥廠廠商：' + esc(it.cust || '—') + (checkedComp.has(C.norm(it.name)) ? ' · <b>✓已查過</b>' : '');
+''
+        : '藥廠廠商：' + esc(it.cust || '—');
+      const rd = round(it.type);
+      if (rd.isDone(it.name)) sub += '<div class="lab warn" style="margin-top:4px">本輪已查過（' + esc(doneLabel(rd, it.name).replace('✓ ', '')) + '），確定要重複抽查嗎？</div>';
     }
     const custField = it.type === 'comp'
       ? '<div class="field"><label>藥廠廠商</label><input type="text" data-act="cust" data-i="' + i + '" value="' + esc(it.cust) + '"></div>'
@@ -258,41 +260,51 @@
   function renderAll() { renderDate(); renderItems(); renderSummary(); }
   function changed(i) { if (i != null) { recompute(report.items[i]); renderItem(i); } renderSummary(); saveDraft(); }
 
+  /* ---------------- 已查過（輪次制，只看藥名） ---------------- */
+  // 計算時排除「目前這份週報的日期」，因為這份週報送出後會整批取代該日紀錄
+  function rebuildChecked() {
+    if (!data) return;
+    const log = (data.log || []).filter(r => r.date !== report.date);
+    chkCust = C.buildChecked(data.legacyCust || [], log.filter(r => r.type === 'cust'));
+    chkComp = C.buildChecked(data.legacyComp || [], log.filter(r => r.type === 'comp'));
+  }
+  function poolValid(p) { const e = C.expToISO(p.exp); return p.qty > 0 && e && e >= report.date; }
+  function round(type) {
+    if (!data) return C.roundOf(new Map(), []);
+    return type === 'cust'
+      ? C.roundOf(chkCust, data.pool.filter(poolValid).map(p => p.name))
+      : C.roundOf(chkComp, data.master.filter(m => m.active).map(m => m.name));
+  }
+  function doneLabel(rd, name) { return C.checkedLabel(rd.info(name)); }
+
   /* ---------------- 隨機抽 ---------------- */
   function usedKeys(except) {
     const s = new Set();
-    report.items.forEach((it, k) => { if (k !== except && it.name) s.add(it.type === 'cust' ? ckey(it.name, it.cust) : C.norm(it.name)); });
+    report.items.forEach((it, k) => { if (k !== except && it.name) s.add(it.type + '|' + C.norm(it.name)); });
     return s;
   }
-  function eligibleCust(except) {
+  // 依本輪優先（查核次數少的先），同藥名只取一筆，回傳隨機排序的候選
+  function candidates(type, except) {
     const used = usedKeys(except);
-    return data.pool.filter(p => {
-      const e = C.expToISO(p.exp);
-      return p.qty > 0 && e && e >= report.date && !checkedCust.has(ckey(p.name, p.cust)) && !used.has(ckey(p.name, p.cust));
-    });
-  }
-  function eligibleComp(except) {
-    const used = usedKeys(except);
-    const act = data.master.filter(m => m.active && !used.has(C.norm(m.name)));
-    const fresh = act.filter(m => !checkedComp.has(C.norm(m.name)));
-    return { list: fresh.length ? fresh : act, allChecked: !fresh.length };
+    const rd = round(type);
+    const list = type === 'cust' ? data.pool.filter(poolValid) : data.master.filter(m => m.active);
+    const byName = new Map();
+    shuffle(list.slice()).forEach(p => { const k = C.norm(p.name); if (!used.has(type + '|' + k) && !byName.has(k)) byName.set(k, p); });
+    return Array.from(byName.values()).map(p => ({ p: p, c: rd.info(p.name).count, r: Math.random() }))
+      .sort((a, b) => a.c - b.c || a.r - b.r).map(x => ({ p: x.p, done: rd.isDone(x.p.name) }));
   }
   function custFromPool(p) { return { name: p.name, cust: p.cust, qty: p.qty, sup: p.sup, exp: C.expToISO(p.exp) }; }
   function compFromMaster(m) { return { name: m.name, cust: m.maker, exp: '' }; }
 
   function randomOne(i) {
     if (!data) return toast('資料尚未載入');
-    const it = report.items[i];
-    if (it.type === 'cust') {
-      const el = eligibleCust(i);
-      if (!el.length) return toast('沒有符合條件（有效、有庫存、未查過）的客戶藥');
-      setItem(i, custFromPool(el[Math.floor(Math.random() * el.length)]));
-    } else {
-      const r = eligibleComp(i);
-      if (!r.list.length) return toast('公司藥主檔沒有可用的藥品');
-      if (r.allChecked) toast('主檔的公司藥都查過了，從全部啟用品項中抽');
-      setItem(i, compFromMaster(r.list[Math.floor(Math.random() * r.list.length)]));
-    }
+    const type = report.items[i].type;
+    const cs = candidates(type, i);
+    if (!cs.length) return toast(type === 'cust' ? '沒有有效、有庫存的客戶藥' : '公司藥主檔沒有啟用的藥品');
+    const fresh = cs.filter(x => !x.done);
+    const pick = (fresh.length ? fresh : cs)[0];
+    if (!fresh.length) toast('本輪藥名都查過了，改抽下一輪');
+    setItem(i, type === 'cust' ? custFromPool(pick.p) : compFromMaster(pick.p));
     renderItems(); changed();
   }
   function randomAll(type) {
@@ -300,21 +312,11 @@
     const idxs = report.items.map((it, k) => k).filter(k => report.items[k].type === type);
     if (idxs.some(k => report.items[k].name) && !confirm('會覆蓋目前已選的 ' + (type === 'cust' ? '客戶藥' : '公司藥') + '，確定嗎？')) return;
     idxs.forEach(k => { report.items[k] = blankItem(type); });
-    if (type === 'cust') {
-      const el = shuffle(eligibleCust(-1).slice());
-      // 盡量不同藥名
-      const picked = [], names = new Set();
-      el.forEach(p => { if (picked.length < idxs.length && !names.has(C.norm(p.name))) { picked.push(p); names.add(C.norm(p.name)); } });
-      el.forEach(p => { if (picked.length < idxs.length && picked.indexOf(p) < 0) picked.push(p); });
-      picked.forEach((p, k) => setItem(idxs[k], custFromPool(p)));
-      if (picked.length < idxs.length) toast('符合條件的客戶藥只有 ' + picked.length + ' 筆');
-    } else {
-      const r = eligibleComp(-1);
-      const picked = shuffle(r.list.slice()).slice(0, idxs.length);
-      picked.forEach((m, k) => setItem(idxs[k], compFromMaster(m)));
-      if (r.allChecked) toast('主檔的公司藥都查過了，從全部啟用品項中抽');
-      else if (picked.length < idxs.length) toast('未查過的公司藥只有 ' + picked.length + ' 筆');
-    }
+    const cs = candidates(type, -1).slice(0, idxs.length);
+    cs.forEach((x, k) => setItem(idxs[k], type === 'cust' ? custFromPool(x.p) : compFromMaster(x.p)));
+    const doneN = cs.filter(x => x.done).length;
+    if (cs.length < idxs.length) toast('可抽的藥名只有 ' + cs.length + ' 種');
+    else if (doneN) toast('本輪只剩 ' + (cs.length - doneN) + ' 種未查，其餘從下一輪抽');
     renderItems(); changed();
   }
 
@@ -329,11 +331,12 @@
     openModal((isCust ? '選擇客戶藥 ' + (i + 1) : '選擇公司藥 ' + (i - N_CUST + 1)),
       '<input class="search" id="pkQ" placeholder="搜尋藥名' + (isCust ? '或客戶' : '或廠商') + '" autocomplete="off">' +
       '<div class="filters">' + (isCust ? '<label><input type="checkbox" id="pkValid" checked> 只看有效、有庫存</label>' : '<label><input type="checkbox" id="pkValid" checked> 只看啟用</label>') +
-      '<label><input type="checkbox" id="pkHide"> 隱藏已查過</label></div><div id="pkList"></div>' +
+      '<label><input type="checkbox" id="pkHide"> 隱藏本輪已查過</label></div><div id="pkList"></div>' +
       '<details style="margin-top:12px"><summary>找不到？手動輸入</summary><div class="form" style="margin-top:8px">' +
       '<label>藥名</label><input id="pkName"><label>' + (isCust ? '客戶' : '藥廠廠商') + '</label><input id="pkCust">' +
       '<button class="btn primary" id="pkManual" type="button">使用手動輸入</button></div></details>');
     const used = usedKeys(i);
+    const rd = round(it.type);
     const draw = () => {
       const q = C.norm($('#pkQ').value);
       const valid = $('#pkValid').checked, hide = $('#pkHide').checked;
@@ -341,10 +344,10 @@
       if (isCust) {
         rows = data.pool.map((p, k) => {
           const e = C.expToISO(p.exp);
-          return { k: k, p: p, done: checkedCust.has(ckey(p.name, p.cust)), inuse: used.has(ckey(p.name, p.cust)), expired: !e || e < report.date, empty: !(p.qty > 0) };
+          return { k: k, p: p, done: rd.isDone(p.name), inuse: used.has('cust|' + C.norm(p.name)), expired: !e || e < report.date, empty: !(p.qty > 0) };
         }).filter(r => (!q || C.norm(r.p.name + r.p.cust).indexOf(q) >= 0) && (!valid || (!r.expired && !r.empty)) && (!hide || !r.done));
       } else {
-        rows = data.master.map((m, k) => ({ k: k, p: m, done: checkedComp.has(C.norm(m.name)), inuse: used.has(C.norm(m.name)) }))
+        rows = data.master.map((m, k) => ({ k: k, p: m, done: rd.isDone(m.name), inuse: used.has('comp|' + C.norm(m.name)) }))
           .filter(r => (!q || C.norm(r.p.name + r.p.maker).indexOf(q) >= 0) && (!valid || r.p.active) && (!hide || !r.done));
       }
       rows.sort((a, b) => (a.done - b.done) || (a.inuse - b.inuse));
@@ -353,7 +356,7 @@
         const p = r.p;
         const d = isCust ? esc(p.cust) + ' · 效期 ' + esc(C.expText(C.expToISO(p.exp)) || p.exp || '—') + ' · 庫存 ' + esc(p.qty) : esc(p.maker || '—') + (p.active ? '' : ' · 停用');
         return '<div class="opt' + (r.done ? ' done' : '') + (r.inuse ? ' inuse' : '') + '" data-k="' + r.k + '"><div class="on"><div class="n">' + esc(p.name) + '</div><div class="d">' + d + '</div></div>' +
-          (r.done ? '<span class="tag done">✓已查</span>' : '') + (r.expired ? '<span class="tag exp">過期</span>' : '') + (r.inuse ? '<span class="tag">本週已選</span>' : '') + '</div>';
+          (r.done ? '<span class="tag done">' + esc(doneLabel(rd, p.name)) + '</span>' : '') + (r.expired ? '<span class="tag exp">過期</span>' : '') + (r.inuse ? '<span class="tag">本週已選</span>' : '') + '</div>';
       }).join('') + (rows.length > 200 ? '<p class="hint">只顯示前 200 筆，請用搜尋縮小範圍</p>' : '');
     };
     draw();
@@ -438,6 +441,7 @@
   }
   function loadReport(rep) {
     report = { date: rep.date, items: rep.items.map(x => Object.assign(blankItem(x.type), x, { labCands: [] })) };
+    rebuildChecked();
     report.items.forEach(recompute);
     renderAll(); saveDraft();
   }
@@ -450,9 +454,12 @@
       const r = await api('saveReport', { report: rep });
       const rec = { date: rep.date, code: rep.code, fail: r.fail, total: r.total, updated: r.updated };
       data.records = data.records.filter(x => x.date !== rep.date).concat([rec]);
-      rep.items.forEach(it => { if (it.type === 'cust') checkedCust.add(ckey(it.name, it.cust)); else checkedComp.add(C.norm(it.name)); });
+      data.log = (data.log || []).filter(x => x.date !== rep.date).concat(rep.items.filter(it => it.name).map(it => ({
+        type: it.type, date: rep.date, code: rep.code, name: it.name, cust: it.cust, exp: it.expText, appearance: it.appearance,
+        lab: it.lab, verdict: it.verdict, remark: [it.appearanceOK === false ? it.appearanceNote : '', it.remark].filter(Boolean).join(' ') })));
+      rebuildChecked();
       await buildExcel(rep);
-      toast('已送出（新增已查過：客戶藥 ' + r.addedCust + '、公司藥 ' + r.addedComp + '），Excel 下載中', 4000);
+      toast('已送出（已查過紀錄：客戶藥 ' + r.addedCust + '、公司藥 ' + r.addedComp + ' 筆），Excel 下載中', 4000);
       renderAll();
     } catch (e) { toast('送出失敗：' + e.message, 5000); }
     btn.textContent = '送出並下載 Excel'; renderSummary();
@@ -475,9 +482,10 @@
       const d = b.dataset.d;
       try {
         if (b.dataset.h === 'del') {
-          if (!confirm('刪除 ' + C.rocDateText(d) + ' 的週報？（已查過清單不會被刪）')) return;
+          if (!confirm('刪除 ' + C.rocDateText(d) + ' 的週報？這一天的「已查過紀錄」也會一起刪除。')) return;
           await api('deleteReport', { date: d });
           data.records = data.records.filter(x => x.date !== d);
+          data.log = (data.log || []).filter(x => x.date !== d); rebuildChecked();
           openHistory(); renderAll(); return;
         }
         b.disabled = true;
@@ -487,6 +495,51 @@
         else { await buildExcel(j.report); toast('Excel 下載中'); b.disabled = false; }
       } catch (err) { toast(err.message, 5000); b.disabled = false; }
     };
+  }
+
+
+  /* ---------------- 已查過清單輸出 ---------------- */
+  function openChecked() {
+    if (!data) return toast('資料尚未載入');
+    const y = new Date().getFullYear();
+    const rc = round('cust'), rp = round('comp');
+    openModal('已查過清單',
+      '<div class="form"><div class="hint" style="margin:0">本輪進度：客戶藥剩 <b>' + rc.pending + '／' + rc.size + '</b> 種未查，公司藥剩 <b>' + rp.pending + '／' + rp.size + '</b> 種未查。</div>' +
+      '<label><input type="radio" name="ckR" value="year" checked> 今年（' + (y - 1911) + ' 年）</label>' +
+      '<label><input type="radio" name="ckR" value="all"> 全部（含舊資料 Sheet1／工作表1）</label>' +
+      '<label><input type="radio" name="ckR" value="custom"> 自訂起訖日期</label>' +
+      '<div class="row" id="ckDates" style="display:none"><input type="date" id="ckFrom"><span>～</span><input type="date" id="ckTo"></div>' +
+      '<div id="ckInfo" class="hint"></div><button class="btn primary big" id="ckGo">下載 Excel</button></div>');
+    const get = () => {
+      const mode = document.querySelector('input[name=ckR]:checked').value;
+      return { mode: mode, year: y, from: $('#ckFrom').value, to: $('#ckTo').value };
+    };
+    const info = () => {
+      const r = get();
+      $('#ckDates').style.display = r.mode === 'custom' ? 'flex' : 'none';
+      const a = C.checkedExportRows('cust', data.legacyCust, data.log, r).length - 1;
+      const b = C.checkedExportRows('comp', data.legacyComp, data.log, r).length - 1;
+      $('#ckInfo').textContent = '客戶藥 ' + a + ' 筆、公司藥 ' + b + ' 筆';
+    };
+    $('#modalBody').querySelectorAll('input').forEach(el => el.addEventListener('change', info));
+    info();
+    $('#ckGo').addEventListener('click', async () => {
+      const r = get();
+      const w = [8, 18, 14, 14, 12, 12, 12, 8, 10, 8, 20];
+      const files = C.xlsxFiles([
+        { name: '客戶藥', rows: C.checkedExportRows('cust', data.legacyCust, data.log, r), widths: w },
+        { name: '公司藥', rows: C.checkedExportRows('comp', data.legacyComp, data.log, r), widths: w }
+      ]);
+      const zip = new JSZip();
+      Object.keys(files).forEach(k => zip.file(k, files[k]));
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const tag = r.mode === 'year' ? String(y - 1911) + '年' : r.mode === 'all' ? '全部' : (r.from || '起') + '_' + (r.to || '迄');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = '屏東廠藥品已查過清單_' + tag + '.xlsx';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+      toast('已查過清單下載中');
+    });
   }
 
   /* ---------------- 上傳 Excel ---------------- */
@@ -558,6 +611,7 @@
     $('#date').addEventListener('change', async e => {
       if (!e.target.value) return;
       report.date = e.target.value;
+      rebuildChecked();
       report.items.forEach(recompute);
       renderAll(); saveDraft();
       const rec = data && data.records.find(r => r.date === report.date);
@@ -570,6 +624,7 @@
     $('#btnSave').addEventListener('click', onSave);
     $('#btnDownload').addEventListener('click', onDownload);
     $('#btnHistory').addEventListener('click', openHistory);
+    $('#btnChecked').addEventListener('click', openChecked);
     $('#btnUpload').addEventListener('click', openUpload);
     $('#btnSettings').addEventListener('click', openSettings);
     $('#modalClose').addEventListener('click', closeModal);

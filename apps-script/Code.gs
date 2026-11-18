@@ -26,8 +26,10 @@ const SHEETS = {
   CHECKED_COMP: '工作表1',  // 已查過公司藥
   LAB: 'Sheet5',           // 內部檢驗判定
   MASTER: '公司藥主檔',      // 公司藥主檔（藥名、藥廠廠商、是否啟用）
-  RECORDS: '抽查紀錄'        // 每週週報
+  RECORDS: '抽查紀錄',       // 每週週報
+  LOG: '已查過紀錄'          // 每筆已查過藥品（客戶藥＋公司藥）
 };
+const LOG_HEADER = ['類別', '抽查日期', '週次', '藥名', '客戶／藥廠廠商', '效期', '外觀', '檢驗報告', '判定', '備註'];
 const UPLOADABLE = [SHEETS.POOL, SHEETS.CHECKED_CUST, SHEETS.CHECKED_COMP, SHEETS.LAB, SHEETS.MASTER];
 const MASTER_HEADER = ['藥名', '藥廠廠商', '是否啟用'];
 const RECORD_HEADER = ['抽查日期', '週次代碼', '不合格數', '總數', '內容JSON', '更新時間'];
@@ -84,6 +86,9 @@ function setup() {
   let r = ss.getSheetByName(SHEETS.RECORDS);
   if (!r) { r = ss.insertSheet(SHEETS.RECORDS); }
   if (r.getLastRow() === 0) r.getRange(1, 1, 1, RECORD_HEADER.length).setValues([RECORD_HEADER]).setFontWeight('bold');
+  let lg = ss.getSheetByName(SHEETS.LOG);
+  if (!lg) { lg = ss.insertSheet(SHEETS.LOG); }
+  if (lg.getLastRow() === 0) lg.getRange(1, 1, 1, LOG_HEADER.length).setValues([LOG_HEADER]).setFontWeight('bold');
   Logger.log('資料試算表：' + ss.getUrl());
   return ss.getUrl();
 }
@@ -128,13 +133,26 @@ function getData_() {
       });
     }
   }
-  // Sheet1：已查過客戶藥（B=藥名, C=客戶）
-  const checkedCust = values_(SHEETS.CHECKED_CUST)
-    .map(r => [String(r[1] || '').trim(), String(r[2] || '').trim()])
-    .filter(p => p[0]);
-  // 工作表1：已查過公司藥（B=藥名）
-  const checkedComp = values_(SHEETS.CHECKED_COMP)
-    .map(r => String(r[1] || '').trim()).filter(Boolean);
+  // 舊資料 Sheet1：[藥名(B), 客戶(C), 外觀(E), 效期(F)]
+  const t = v => String(v == null ? '' : v).trim();
+  const legacyCust = values_(SHEETS.CHECKED_CUST)
+    .map(r => [t(r[1]), t(r[2]), t(r[4]), t(r[5])]).filter(p => p[0]);
+  // 舊資料 工作表1：[藥名(B), 藥廠廠商(D 或 C), 外觀(E), 效期(F)]
+  const legacyComp = values_(SHEETS.CHECKED_COMP)
+    .map(r => [t(r[1]), t(r[3]) || t(r[2]), t(r[4]), t(r[5])]).filter(p => p[0]);
+  // 已查過紀錄
+  const lgv = values_(SHEETS.LOG);
+  const log = [];
+  if (lgv.length > 1) {
+    const h = lgv[0];
+    const idx = LOG_HEADER.map((n, i) => colIndex_(h, [n], i));
+    for (let r = 1; r < lgv.length; r++) {
+      const v = idx.map(i => t(lgv[r][i]));
+      if (!v[3]) continue;
+      log.push({ type: v[0] === '公司藥' ? 'comp' : 'cust', date: v[1], code: v[2], name: v[3], cust: v[4], exp: v[5],
+        appearance: v[6], lab: v[7], verdict: v[8], remark: v[9] });
+    }
+  }
   // 公司藥主檔
   const mv = values_(SHEETS.MASTER);
   const master = [];
@@ -165,7 +183,7 @@ function getData_() {
     if (!rv[r][0]) continue;
     records.push({ date: rv[r][0], code: rv[r][1], fail: Number(rv[r][2]) || 0, total: Number(rv[r][3]) || 0, updated: rv[r][5] });
   }
-  return { pool: pool, checkedCust: checkedCust, checkedComp: checkedComp, master: master, lab: lab, records: records };
+  return { pool: pool, legacyCust: legacyCust, legacyComp: legacyComp, log: log, master: master, lab: lab, records: records };
 }
 
 function findRecordRow_(sh, date) {
@@ -200,28 +218,35 @@ function saveReport_(rep) {
   if (r > 0) sh.getRange(r, 1, 1, row.length).setValues([row]);
   else sh.appendRow(row);
 
-  // 已查過清單：只附加尚未存在的品項
-  const norm = s => String(s || '').replace(/[\s\-－—_()（）]/g, '').toLowerCase();
-  const cust = ss.getSheetByName(SHEETS.CHECKED_CUST);
-  const have = new Set(values_(SHEETS.CHECKED_CUST).map(v => norm(v[1]) + '|' + norm(v[2])));
-  let addC = 0, addP = 0;
-  items.filter(it => it.type === 'cust' && it.name).forEach(it => {
-    const k = norm(it.name) + '|' + norm(it.cust);
-    if (have.has(k)) return;
-    have.add(k);
-    appendText_(cust, [cust.getLastRow() === 0 ? '客戶藥' : '', it.name, it.cust, '', it.appearance, it.exp]);
-    addC++;
-  });
-  const comp = ss.getSheetByName(SHEETS.CHECKED_COMP);
-  const haveP = new Set(values_(SHEETS.CHECKED_COMP).map(v => norm(v[1])));
-  items.filter(it => it.type === 'comp' && it.name).forEach(it => {
-    const k = norm(it.name);
-    if (haveP.has(k)) return;
-    haveP.add(k);
-    appendText_(comp, [comp.getLastRow() === 0 ? '公司藥' : '', it.name, '', it.cust, it.appearance, it.exp]);
-    addP++;
-  });
+  // 已查過紀錄：先刪同一抽查日期的舊列，再寫入本次品項
+  const lg = ss.getSheetByName(SHEETS.LOG);
+  const removed = deleteLogRows_(rep.date);
+  const rows = items.filter(it => it.name).map(it => [
+    it.type === 'comp' ? '公司藥' : '客戶藥', rep.date, rep.code || '', it.name, it.cust || '', it.expText || it.exp || '',
+    it.appearance || '', it.lab || '', it.verdict || '',
+    [it.appearanceOK === false ? it.appearanceNote : '', it.remark].filter(Boolean).join(' ')
+  ].map(v => String(v)));
+  if (rows.length) {
+    const rg = lg.getRange(lg.getLastRow() + 1, 1, rows.length, LOG_HEADER.length);
+    rg.setNumberFormat('@');
+    rg.setValues(rows);
+  }
+  const addC = rows.filter(r => r[0] === '客戶藥').length, addP = rows.length - addC;
   return { ok: true, fail: fail, total: items.length, addedCust: addC, addedComp: addP, updated: now };
+}
+
+// 刪除「已查過紀錄」中指定抽查日期的列，回傳刪除筆數
+function deleteLogRows_(date) {
+  const lg = ss_().getSheetByName(SHEETS.LOG);
+  if (!lg || lg.getLastRow() < 2) return 0;
+  const h = lg.getRange(1, 1, 1, Math.max(lg.getLastColumn(), 1)).getDisplayValues()[0];
+  const col = colIndex_(h, ['抽查日期'], 1) + 1;
+  const vals = lg.getRange(2, col, lg.getLastRow() - 1, 1).getDisplayValues();
+  let n = 0;
+  for (let i = vals.length - 1; i >= 0; i--) {
+    if (vals[i][0] === date) { lg.deleteRow(i + 2); n++; }
+  }
+  return n;
 }
 
 function appendText_(sh, row) {
@@ -236,7 +261,8 @@ function deleteReport_(date) {
   const r = sh ? findRecordRow_(sh, String(date)) : -1;
   if (r < 0) return { ok: false, error: '找不到這一天的週報' };
   sh.deleteRow(r);
-  return { ok: true };
+  const n = deleteLogRows_(String(date));
+  return { ok: true, removedLog: n };
 }
 
 /* ---------------- 上傳 Excel 覆蓋 ---------------- */
