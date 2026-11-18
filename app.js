@@ -141,6 +141,39 @@
     const segHtml = it.labState === 'pending' ? '' : seg('lab', opts, it.lab, i) + (it.labManual ? ' <span class="manual">手動</span>' : '');
     return '<div class="stack">' + segHtml + info + '</div>';
   }
+  // 下拉選單：未查過 / ✓已查過 / 過期或無庫存（客戶藥），本週其他欄已選的不能再選
+  function selectHtml(it, i) {
+    if (!data) return '';
+    const used = usedKeys(i);
+    const isCust = it.type === 'cust';
+    const curKey = it.name ? (isCust ? ckey(it.name, it.cust) : C.norm(it.name)) : '';
+    let found = false;
+    const groups = isCust ? { a: [], b: [], c: [] } : { a: [], b: [] };
+    const list = isCust ? data.pool : data.master;
+    list.forEach((p, k) => {
+      if (!isCust && !p.active) return;
+      const key = isCust ? ckey(p.name, p.cust) : C.norm(p.name);
+      const done = isCust ? checkedCust.has(key) : checkedComp.has(key);
+      const sel = key === curKey && !found;
+      if (sel) found = true;
+      const inuse = used.has(key) && !sel;
+      let bad = '';
+      if (isCust) {
+        const e = C.expToISO(p.exp);
+        if (!e || e < report.date) bad = '過期';
+        else if (!(p.qty > 0)) bad = '無庫存';
+      }
+      const label = (done ? '✓ ' : '') + p.name + '｜' + (isCust ? (p.cust || '—') + '｜效期 ' + (C.expText(C.expToISO(p.exp)) || p.exp || '—') : (p.maker || '—')) +
+        (bad ? '（' + bad + '）' : '') + (inuse ? '（本週已選）' : '');
+      const opt = '<option value="' + k + '"' + (sel ? ' selected' : '') + (inuse ? ' disabled' : '') + '>' + esc(label) + '</option>';
+      (bad ? groups.c : done ? groups.b : groups.a).push(opt);
+    });
+    const g = (t, a) => a.length ? '<optgroup label="' + t + '（' + a.length + '）">' + a.join('') + '</optgroup>' : '';
+    return '<div class="pick-row"><select class="pick-sel" data-act="sel" data-i="' + i + '">' +
+      '<option value=""' + (it.name ? '' : ' selected') + '>— 下拉選擇' + (isCust ? '客戶藥' : '公司藥') + '（✓ = 已查過）—</option>' +
+      (it.name && !found ? '<option value="" selected>' + esc(it.name + '（手動輸入）') + '</option>' : '') +
+      g('未查過', groups.a) + g('✓ 已查過', groups.b) + (isCust ? g('過期或無庫存', groups.c) : '') + '</select></div>';
+  }
   function itemHtml(it, i) {
     const no = it.type === 'cust' ? i + 1 : i - N_CUST + 1;
     const isBad = it.name && it.verdict === '不合格';
@@ -158,8 +191,9 @@
       '<div class="item-top"><div class="item-no">' + no + '</div><div class="item-main">' +
       (it.name ? '<div class="item-name">' + esc(it.name) + '</div><div class="item-sub">' + sub + '</div>'
         : '<div class="item-name empty">尚未選擇藥品</div>') +
-      '</div><div class="item-btns"><button type="button" class="mini" data-act="rand" data-i="' + i + '">換一筆</button>' +
-      '<button type="button" class="mini" data-act="pick" data-i="' + i + '">選擇</button></div></div>' +
+      '</div><div class="item-btns"><button type="button" class="mini" data-act="rand" data-i="' + i + '">隨機換</button>' +
+      '<button type="button" class="mini" data-act="pick" data-i="' + i + '">搜尋</button></div></div>' +
+      selectHtml(it, i) +
       (it.name ? (
         custField +
         '<div class="field"><label>外觀</label><div>' + seg('app', [{ v: 'ok', t: '外觀正常', cls: 'okc' }, { v: 'bad', t: '異常', cls: 'badc' }], it.appearanceOK ? 'ok' : 'bad', i) + '</div></div>' +
@@ -209,12 +243,12 @@
   function renderSummary() {
     const s = stats();
     const rows = report.items.map((it, i) => '<tr><td>' + (it.type === 'cust' ? '客' : '公') + (it.type === 'cust' ? i + 1 : i - N_CUST + 1) + '</td><td>' +
-      (it.name ? esc(it.name) : '<span class="badge grey">未選</span>') + '</td><td class="c">' + esc(it.lab || '') + '</td><td class="c">' +
+      (it.name ? esc(it.name) : '<span class="badge grey">未選</span>') + '</td><td>' + esc(it.cust || '') + '</td><td class="c">' + esc(it.lab || '') + '</td><td class="c">' +
       (it.name ? '<span class="badge ' + (it.verdict === '不合格' ? 'bad' : 'ok') + '">' + esc(it.verdict) + '</span>' : '') + '</td></tr>').join('');
     const weekTxt = s.month.weeks.map((w, k) => '第' + '一二三四五'[k] + '週（' + w.date.slice(5).replace('-', '/') + '）' + w.fail + '/' + w.total).join('、');
     const errs = validate();
     $('#summary').innerHTML =
-      '<table class="sum"><thead><tr><th></th><th>藥品</th><th class="c">檢驗</th><th class="c">判定</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table class="sum"><thead><tr><th></th><th>藥品</th><th>客戶／廠商</th><th class="c">檢驗</th><th class="c">判定</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div class="rates"><div class="rate"><div class="k">本週不合格率</div><div class="v">' + pct(s.fail, s.total) + '</div><div class="s">' + s.fail + ' / ' + s.total + '</div></div>' +
       '<div class="rate"><div class="k">本月累計不合格率</div><div class="v">' + pct(s.month.fail, s.month.total) + '</div><div class="s">' + s.month.fail + ' / ' + s.month.total + '</div></div></div>' +
       '<div class="weeks">' + esc(weekTxt) + (s.month.overflow ? '（本月超過 5 次抽查，只計前 5 次）' : '') + '</div>' +
@@ -259,7 +293,7 @@
       if (r.allChecked) toast('主檔的公司藥都查過了，從全部啟用品項中抽');
       setItem(i, compFromMaster(r.list[Math.floor(Math.random() * r.list.length)]));
     }
-    changed(); renderItem(i);
+    renderItems(); changed();
   }
   function randomAll(type) {
     if (!data) return toast('資料尚未載入');
@@ -330,7 +364,7 @@
       const o = e.target.closest('.opt'); if (!o || o.classList.contains('inuse')) return;
       const k = +o.dataset.k;
       setItem(i, isCust ? custFromPool(data.pool[k]) : compFromMaster(data.master[k]));
-      closeModal(); renderItem(i); changed();
+      closeModal(); renderItems(); changed();
     });
     $('#pkManual').addEventListener('click', () => {
       const name = $('#pkName').value.trim(); if (!name) return toast('請輸入藥名');
@@ -357,6 +391,12 @@
   function onChange(e) {
     const t = e.target; if (!t.dataset || !t.dataset.act) return;
     const i = +t.dataset.i, it = report.items[i], act = t.dataset.act;
+    if (act === 'sel') {
+      if (t.value === '') return;
+      const k = +t.value;
+      setItem(i, it.type === 'cust' ? custFromPool(data.pool[k]) : compFromMaster(data.master[k]));
+      renderItems(); return changed();
+    }
     if (act === 'exp') { it.exp = t.value; return changed(i); }
     if (act === 'cust') it.cust = t.value.trim();
     else if (act === 'appnote') it.appearanceNote = t.value.trim();
