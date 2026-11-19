@@ -159,8 +159,9 @@ function getData_() {
   if (mv.length) {
     const h = mv[0].map(x => String(x).trim());
     let iN = colIndex_(h, ['藥名', '品名'], -1);
-    let iM = colIndex_(h, ['藥廠廠商', '廠商', '藥廠'], -1);
+    let iM = colIndex_(h, ['藥廠廠商', '廠商', '藥廠', '供應商'], -1);
     let iA = colIndex_(h, ['是否啟用', '啟用'], -1);
+    const iQ = colIndex_(h, ['庫存量'], -1);   // 主檔若是庫存表格式：庫存量 > 0 才啟用
     let start = 1;
     if (iN < 0) {
       start = 0;
@@ -168,12 +169,14 @@ function getData_() {
       iN = filled(0) >= filled(1) ? 0 : 1;
       if (iM < 0) iM = iN === 0 ? 1 : (filled(3) ? 3 : 2);
       if (iA < 0 && iN === 0) iA = 2;
-    } else if (iM < 0) iM = iN + 1;
+    } else if (iM < 0 && iQ < 0) iM = iN + 1;
     for (let r = start; r < mv.length; r++) {
       const name = String(mv[r][iN] || '').trim();
       if (!name || name === '藥名') continue;
       const act = iA >= 0 ? String(mv[r][iA] || '').trim() : '';
-      master.push({ name: name, maker: String(mv[r][iM] || '').trim(), active: !/^(N|否|停用|0|FALSE)$/i.test(act) });
+      let active = !/^(N|否|停用|0|FALSE)$/i.test(act);
+      if (start === 1 && iQ >= 0 && !(parseFloat(String(mv[r][iQ]).replace(/,/g, '')) > 0)) active = false;
+      master.push({ name: name, maker: iM >= 0 ? String(mv[r][iM] || '').trim() : '', active: active });
     }
   }
   // Sheet5：內部檢驗（品名、判定、判定日期、檢驗項次）
