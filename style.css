@@ -113,3 +113,6 @@ table.sum td.c { text-align: center; }
 
 .pick-row { margin-top: 10px; }
 .pick-sel { width: 100%; padding: 9px 10px; border: 1px solid #b9d3d9; border-radius: 10px; min-height: 44px; background: #f7fbfc; font-size: 15px; }
+.up-opt { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink) !important; }
+.up-opt.warn { border-color: #f1d9a8; background: #fffaf0; }
+.form .up-opt input { width: 20px; height: 20px; min-height: 0; padding: 0; margin: 0 8px 0 0; vertical-align: -4px; }

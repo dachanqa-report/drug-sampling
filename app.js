@@ -543,45 +543,65 @@
   }
 
   /* ---------------- 上傳 Excel ---------------- */
-  const UPLOADABLE = ['Sheet3', 'Sheet1', '工作表1', 'Sheet5', '公司藥主檔'];
+  const UPLOADABLE = [
+    { n: 'Sheet3', d: '客戶自備藥庫存', on: true },
+    { n: 'Sheet5', d: '內部檢驗判定', on: true },
+    { n: '公司藥主檔', d: '建議直接在 Google 試算表修改', on: false },
+    { n: 'Sheet1', d: '舊資料（已查過客戶藥），平常不要勾', on: false, warn: true },
+    { n: '工作表1', d: '舊資料（已查過公司藥），平常不要勾', on: false, warn: true }
+  ];
   function openUpload() {
     openModal('上傳 Excel 更新資料',
-      '<div class="form"><p class="hint" style="margin:0">上傳和 11547 相同格式的 Excel。檔案中名為 ' + UPLOADABLE.join('、') +
-      ' 的分頁，會<b>整張覆蓋</b> Google Sheet 上對應的分頁（覆蓋前自動備份）。沒有的分頁不動。</p>' +
-      '<input type="file" id="upFile" accept=".xlsx,.xls,.xlsm"><div id="upInfo" class="hint"></div>' +
+      '<div class="form"><p class="hint" style="margin:0">可以直接選整份 11547 格式的 Excel。只有<b>勾選的分頁</b>會整張覆蓋 Google 試算表上同名的分頁（覆蓋前自動備份），沒勾的不動。</p>' +
+      '<input type="file" id="upFile" accept=".xlsx,.xls,.xlsm"><div id="upInfo"></div>' +
       '<label>管理密碼</label><input type="password" id="upPw" autocomplete="off">' +
       '<button class="btn primary big" id="upGo" disabled>確認上傳覆蓋</button></div>');
     let sheets = null;
+    const picked = () => Array.from(document.querySelectorAll('input[name=upS]:checked')).map(x => x.value);
+    const sync = () => {
+      const p = picked();
+      $('#upGo').disabled = !sheets || !p.length;
+      $('#upGo').textContent = p.length ? '確認上傳覆蓋（' + p.join('、') + '）' : '請勾選要更新的分頁';
+    };
     $('#upFile').addEventListener('change', async e => {
       const f = e.target.files[0]; sheets = null; $('#upGo').disabled = true;
-      if (!f) return;
-      $('#upInfo').textContent = '讀取中…';
+      if (!f) { $('#upInfo').innerHTML = ''; return; }
+      $('#upInfo').innerHTML = '<span class="hint">讀取中…</span>';
       try {
         const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
         sheets = {};
-        const found = [];
-        UPLOADABLE.forEach(n => {
-          if (!wb.Sheets[n]) return;
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: '', blankrows: false });
-          // 去掉尾端空白欄
+        let html = '<div class="stack">';
+        UPLOADABLE.forEach(u => {
+          const ws = wb.Sheets[u.n];
+          if (!ws) { html += '<div class="hint">' + esc(u.n) + '：檔案裡沒有這個分頁</div>'; return; }
+          const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: false });
           let w = 0; rows.forEach(r => { for (let c = r.length - 1; c >= 0; c--) if (String(r[c]).trim() !== '') { w = Math.max(w, c + 1); break; } });
-          sheets[n] = rows.map(r => r.slice(0, w).map(v => String(v)));
-          found.push(n + '（' + rows.length + ' 列）');
+          sheets[u.n] = rows.map(r => r.slice(0, w).map(v => String(v)));
+          html += '<label class="up-opt' + (u.warn ? ' warn' : '') + '"><input type="checkbox" name="upS" value="' + esc(u.n) + '"' + (u.on ? ' checked' : '') + '> <b>' +
+            esc(u.n) + '</b>（' + rows.length + ' 列）<span class="hint"> ' + esc(u.d) + '</span></label>';
         });
-        if (!found.length) { $('#upInfo').textContent = '檔案中找不到可更新的分頁。'; sheets = null; return; }
-        $('#upInfo').innerHTML = '將更新：' + esc(found.join('、'));
-        $('#upGo').disabled = false;
-      } catch (err) { $('#upInfo').textContent = '讀取失敗：' + err.message; }
+        html += '</div><div class="hint" style="margin-top:6px">檔案裡的分頁：' + esc(wb.SheetNames.join('、')) + '</div>';
+        $('#upInfo').innerHTML = html;
+        if (!Object.keys(sheets).length) { sheets = null; $('#upInfo').innerHTML += '<div class="reason">檔案中找不到可更新的分頁，請確認分頁名稱。</div>'; }
+        document.querySelectorAll('input[name=upS]').forEach(x => x.addEventListener('change', e2 => {
+          if (e2.target.checked && UPLOADABLE.find(u => u.n === e2.target.value).warn &&
+            !confirm(e2.target.value + ' 是舊資料。覆蓋後，已查過次數會依 Excel 內容重算，可能和「已查過紀錄」重複計算。確定要覆蓋嗎？')) e2.target.checked = false;
+          sync();
+        }));
+        sync();
+      } catch (err) { $('#upInfo').innerHTML = '<div class="reason">讀取失敗：' + esc(err.message) + '</div>'; }
     });
     $('#upGo').addEventListener('click', async () => {
       const pw = $('#upPw').value; if (!pw) return toast('請輸入管理密碼');
+      const p = picked(); if (!p.length) return toast('請勾選要更新的分頁');
+      const send = {}; p.forEach(n => { send[n] = sheets[n]; });
       $('#upGo').disabled = true; $('#upGo').textContent = '上傳中…';
       try {
-        const r = await api('upload', { sheets: sheets }, pw);
+        const r = await api('upload', { sheets: send }, pw);
         closeModal();
         toast('已更新：' + r.updated.join('、') + (r.seededMaster ? '；公司藥主檔已用工作表1 建立 ' + r.seededMaster + ' 筆' : ''), 6000);
         await loadData();
-      } catch (err) { toast('上傳失敗：' + err.message, 6000); $('#upGo').disabled = false; $('#upGo').textContent = '確認上傳覆蓋'; }
+      } catch (err) { toast('上傳失敗：' + err.message, 6000); sync(); }
     });
   }
 
