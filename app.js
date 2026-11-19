@@ -92,6 +92,12 @@
       const j = await api('getData');
       data = j.data;
       labIdx = C.buildLabIndex(data.lab || []);
+      // 公司藥主檔沒有廠商時，到 Sheet5 用藥名比對廠商
+      (data.master || []).forEach(m => {
+        if (m.maker) return;
+        const g = C.guessMaker(labIdx, m.name);
+        if (g) { m.maker = g.maker; m.makerFrom = g.from; }
+      });
       rebuildChecked();
       status('');
       const notes = [];
@@ -182,7 +188,7 @@
       sub = it.type === 'cust'
         ? '客戶：' + esc(it.cust || '—') + (it.qty != null ? ' · 庫存 ' + esc(it.qty) : '') + (it.sup ? ' · ' + esc(it.sup) : '') +
 ''
-        : '藥廠廠商：' + esc(it.cust || '—');
+        : '藥廠廠商：' + esc(it.cust || '—') + (it.makerFrom && it.cust ? '（Sheet5 比對「' + esc(it.makerFrom) + '」）' : '');
       const rd = round(it.type);
       if (rd.isDone(it.name)) sub += '<div class="lab warn" style="margin-top:4px">本輪已查過（' + esc(doneLabel(rd, it.name).replace('✓ ', '')) + '），確定要重複抽查嗎？</div>';
     }
@@ -294,7 +300,7 @@
       .sort((a, b) => a.c - b.c || a.r - b.r).map(x => ({ p: x.p, done: rd.isDone(x.p.name) }));
   }
   function custFromPool(p) { return { name: p.name, cust: p.cust, qty: p.qty, sup: p.sup, exp: C.expToISO(p.exp) }; }
-  function compFromMaster(m) { return { name: m.name, cust: m.maker, exp: '' }; }
+  function compFromMaster(m) { return { name: m.name, cust: m.maker, makerFrom: m.makerFrom || '', exp: '' }; }
 
   function randomOne(i) {
     if (!data) return toast('資料尚未載入');

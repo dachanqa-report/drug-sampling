@@ -89,6 +89,32 @@
     return { found: false, rec: null, pass: null, candidates: cands };
   }
 
+
+  // 依藥名到 Sheet5 找廠商（較嚴格的比對，避免配錯廠商）：
+  // 1) 忽略空白符號後完全相同；2) 一方以另一方開頭（例：適可耐 ↔ 適可耐/C、安來黴素 ↔ 安來黴素F80）；3) 字組相似度 ≥ 0.8
+  function makerScore(a, b) {
+    a = norm(a); b = norm(b);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const short = a.length <= b.length ? a : b, long = a.length <= b.length ? b : a;
+    if (short.length >= 2 && long.indexOf(short) === 0) return 0.9 + 0.09 * short.length / long.length;
+    const A = bigrams(a), B = bigrams(b).slice();
+    let hit = 0;
+    A.forEach(x => { const i = B.indexOf(x); if (i >= 0) { hit++; B.splice(i, 1); } });
+    return (2 * hit) / (bigrams(a).length + bigrams(b).length);
+  }
+  function guessMaker(idx, name, min) {
+    min = min == null ? 0.8 : min;
+    let best = null, bs = 0;
+    idx.names.forEach(r => {
+      if (!r.maker) return;
+      const base = String(r.name).split(/[（(]/)[0];
+      const sc = Math.max(makerScore(name, r.name), base && base !== r.name ? makerScore(name, base) : 0);
+      if (sc > bs || (sc === bs && best && String(r.date) > String(best.date))) { bs = sc; best = r; }
+    });
+    return best && bs >= min ? { maker: best.maker, from: best.name, score: bs } : null;
+  }
+
   /* ---------- 判定 ---------- */
   // item: {type, appearanceOK, exp(ISO), lab:'是'|'否'|''}
   function autoVerdict(item, dateISO) {
@@ -278,6 +304,6 @@
 
   return {
     norm, similarity, todayISO, isoWeek, reportCode, rocDateText, expToISO, expText, isExpired,
-    buildLabIndex, lookupLab, judgeOK, buildChecked, roundOf, rocShort, checkedLabel, xlsxFiles, checkedExportRows, autoVerdict, monthWeeks, setCells, reportCells, rateCells, patchWorkbook, fileName
+    buildLabIndex, lookupLab, guessMaker, judgeOK, buildChecked, roundOf, rocShort, checkedLabel, xlsxFiles, checkedExportRows, autoVerdict, monthWeeks, setCells, reportCells, rateCells, patchWorkbook, fileName
   };
 });
