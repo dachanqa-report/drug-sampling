@@ -10,7 +10,7 @@
     return String(s == null ? '' : s).replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/　/g, ' ');
   }
   function norm(s) {
-    return toHalf(s).replace(/[\s\-—_()（）\[\]【】.,，、%]/g, '').toLowerCase();
+    return toHalf(s).replace(/徳/g, '德').replace(/[\s\-—_()（）\[\]【】.,，、%®™©@]/g, '').toLowerCase();
   }
   function bigrams(s) {
     const a = [];
@@ -106,10 +106,23 @@
   function guessMaker(idx, name, min) {
     min = min == null ? 0.8 : min;
     let best = null, bs = 0;
+    // 主檔名稱可能被截斷或帶含量：去掉括號後內容、尾端數字／%／斜線（至少剩 3 字才用）
+    const q0 = String(name);
+    const qs = [q0];
+    const qb = q0.split(/[（(]/)[0];
+    const qc = qb.replace(/[\s\d.%／/]+[A-Za-z]{0,3}[\s\d.%]*$/, '');
+    [qb, qc].forEach(v => { if (norm(v).length >= 3 && qs.indexOf(v) < 0) qs.push(v); });
     idx.names.forEach(r => {
       if (!r.maker) return;
-      const base = String(r.name).split(/[（(]/)[0];
-      const sc = Math.max(makerScore(name, r.name), base && base !== r.name ? makerScore(name, base) : 0);
+      // Sheet5 品名的候選寫法：原名、括號前、括號內（例：賽滅淨(剋蛆1%)、歐羅肥(CTC15%)）
+      const full = String(r.name);
+      const alts = [full, full.split(/[（(]/)[0]];
+      (full.match(/[（(]([^（()）]+)[)）]/g) || []).forEach(x => alts.push(x.slice(1, -1)));
+      let sc = 0;
+      qs.forEach((q, qi) => {
+        const k = qi === 0 ? 1 : 0.98;
+        alts.forEach((a, ai) => { if (a && norm(a).length >= 2) sc = Math.max(sc, makerScore(q, a) * k * (ai >= 2 ? 0.99 : 1)); });
+      });
       if (sc > bs || (sc === bs && best && String(r.date) > String(best.date))) { bs = sc; best = r; }
     });
     return best && bs >= min ? { maker: best.maker, from: best.name, score: bs } : null;
