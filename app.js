@@ -417,7 +417,7 @@
 
   /* ---------------- Excel ---------------- */
   async function buildExcel(rep) {
-    const res = await fetch('template.xlsx', { cache: 'no-cache' });
+    const res = await fetch('template.xlsx?v=8', { cache: 'no-cache' });
     if (!res.ok) throw new Error('讀不到 Excel 範本');
     const zip = await JSZip.loadAsync(await res.arrayBuffer());
     const paths = ['xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', '[Content_Types].xml'];
