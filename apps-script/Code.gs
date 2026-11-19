@@ -153,14 +153,28 @@ function getData_() {
         appearance: v[6], lab: v[7], verdict: v[8], remark: v[9] });
     }
   }
-  // 公司藥主檔
+  // 公司藥主檔：依標題找欄位（藥名／藥廠廠商／是否啟用）；沒有標題時自動判斷（相容工作表1 格式：B 藥名、D 廠商）
   const mv = values_(SHEETS.MASTER);
   const master = [];
-  for (let r = 1; r < mv.length; r++) {
-    const name = String(mv[r][0] || '').trim();
-    if (!name) continue;
-    const act = String(mv[r][2] || '').trim();
-    master.push({ name: name, maker: String(mv[r][1] || '').trim(), active: !/^(N|否|停用|0|FALSE)$/i.test(act) });
+  if (mv.length) {
+    const h = mv[0].map(x => String(x).trim());
+    let iN = colIndex_(h, ['藥名', '品名'], -1);
+    let iM = colIndex_(h, ['藥廠廠商', '廠商', '藥廠'], -1);
+    let iA = colIndex_(h, ['是否啟用', '啟用'], -1);
+    let start = 1;
+    if (iN < 0) {
+      start = 0;
+      const filled = c => mv.filter(r => String(r[c] || '').trim()).length;
+      iN = filled(0) >= filled(1) ? 0 : 1;
+      if (iM < 0) iM = iN === 0 ? 1 : (filled(3) ? 3 : 2);
+      if (iA < 0 && iN === 0) iA = 2;
+    } else if (iM < 0) iM = iN + 1;
+    for (let r = start; r < mv.length; r++) {
+      const name = String(mv[r][iN] || '').trim();
+      if (!name || name === '藥名') continue;
+      const act = iA >= 0 ? String(mv[r][iA] || '').trim() : '';
+      master.push({ name: name, maker: String(mv[r][iM] || '').trim(), active: !/^(N|否|停用|0|FALSE)$/i.test(act) });
+    }
   }
   // Sheet5：內部檢驗（品名、判定、判定日期、檢驗項次）
   const lv = values_(SHEETS.LAB);
